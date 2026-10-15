@@ -28,10 +28,15 @@
     "점검사항",
     "환산총점"
   ],
-  "build": "v2.3",
+  "build": "v2.4",
   "cleaning": {
     "whitespace_fields": 981,
     "university_name_fields": 1114,
     "track_typo_fields": 105
+  },
+  "conversion": {
+    "source": "https://github.com/kangseok-hub/converter",
+    "model": "linear interpolation of 경기 부산 광주 correspondence tables; arithmetic mean for mixed",
+    "official": false
   }
 }
