@@ -3,6 +3,22 @@
 (()=>{
 const $=id=>document.getElementById(id);
 let records=[],serial=0,pdfLoading=null,reviewed=false,readSequence=0, sourceName='수동 입력', heldRows=[], loading=false;
+let automaticGradeValue=null, userOverrodeAutoGrade=false, lastAutoApplied=null;
+function signalManualOverride(){userOverrodeAutoGrade=true;const hint=$('pdfAutoGradeHint');if(hint&&lastAutoApplied!==null)hint.textContent='대학 찾기에서 직접 수정한 등급을 유지합니다. PDF 평균을 다시 사용하려면 아래 「검토한 평균으로 대학 찾기」를 누르세요.';}
+const gradeField=$('grade');if(gradeField){gradeField.addEventListener('input',event=>{if(event.isTrusted)signalManualOverride()});}const systemField=$('system');if(systemField){systemField.addEventListener('change',event=>{if(event.isTrusted)signalManualOverride()});}
+function syncWholeAverage(){
+ const hint=$('pdfAutoGradeHint');
+ const a=gradeAvg(records.filter(validRow));const system=$('pdfGradeSystem')?.value;
+ if(!a||loading||!records.length){if(hint)hint.textContent='PDF에서 전과목 전체 평균이 계산되면 대학 찾기에 자동 입력됩니다. 원본 대조 전에는 잠정값입니다.';return;}
+ if(system!=='5'){if(hint)hint.textContent='현재 학생부는 9등급제입니다. 5등급제 입력칸에 다른 척도의 값을 자동 입력하지 않습니다. 검토 후 적용 버튼을 이용하세요.';return;}
+ const value=a.value.toFixed(2);automaticGradeValue=value;
+ if(userOverrodeAutoGrade){if(hint)hint.textContent='전과목 전체 평균 '+value+'등급 · 대학 찾기의 직접 수정한 입력값을 유지하고 있습니다.';return;}
+ if($('system').value!=='5')$('system').value='5';
+ if($('grade').value!==value||lastAutoApplied===null){$('grade').value=value;$('grade').max=5;lastAutoApplied=value;$('system').dispatchEvent(new Event('change',{bubbles:true}));$('grade').dispatchEvent(new Event('input',{bubbles:true}));}
+ const source=$('autoGradeSource');if(source){source.hidden=false;source.textContent='학생부 전과목 전체 평균 '+value+'등급이 자동 입력되었습니다'+(reviewed?' (원본 대조 완료)':' (원본 대조 전 · 잠정값)')+'. 이 숫자는 직접 변경할 수 있습니다.';}
+ if(hint)hint.textContent='전과목 전체 평균 '+value+'등급 → 대학 찾기에 자동 입력됨'+(reviewed?' (원본 대조 완료)':' (원본 대조 전 · 잠정값)')+'. 대학 찾기에서 직접 수정한 값은 자동으로 덮어쓰지 않습니다.';
+}
+
 function markUnreviewed(){reviewed=false;const c=$('pdfReviewed');if(c)c.checked=false;updateReview();}
 function updateReview(){const n=records.filter(validRow).length;const c=$('pdfReviewed');const st=$('pdfReviewState');if(c)c.disabled=!n;if(st)st.textContent=n?(reviewed?'✓ 교사가 추출·수정 내용을 원본과 대조했습니다.':'검토 전 · 원본 PDF의 모든 과목과 학점·등급을 대조해야 합니다.'):'계산에 포함할 과목이 없습니다.';const pr=$('pdfPrint');if(pr)pr.disabled=!reviewed||!n||loading;const apply=$('pdfApply');if(apply)apply.disabled=!reviewed||!n||loading;const source=$('pdfSource');if(source)source.textContent=`현재 원본: ${sourceName} · ${reviewed?'원본 대조 완료':'검토 전'}${loading?' · 새 PDF 분석 중':''}`;const meta=$('pdfPrintMeta');if(meta)meta.textContent=`원본: ${sourceName} · ${$('pdfGradeSystem').value}등급제 · 1-1~3-1 (3-2 제외) · ${reviewed?'원본 대조 완료':'미검토 참고자료'} · 반영 ${n}과목`; }
 
@@ -39,7 +55,7 @@ function draw(){
  }).join('');
  const n=records.filter(validRow).length,invalid=records.length-n;
  $('pdfCount').textContent=`계산에 포함한 과목 ${n}개 / 총 ${records.length}개 · 확인이 필요한 행 ${invalid}개 · 등급이 없는 칸은 — 로 표시했습니다. (전체 평균은 3학년 1학기까지의 합산입니다.)`;
- $('pdfAnalysis').hidden=false;updateReview();
+ $('pdfAnalysis').hidden=false;updateReview();syncWholeAverage();
 }
 function validRow(r){return r.include!==false&&allowedSemester(r.year,r.semester)&&String(r.subject).trim()!==''&&Number.isFinite(+r.credit)&&+r.credit>0&&+r.credit<=30&&Number.isInteger(+r.grade)&&+r.grade>=1&&+r.grade<=Number($('pdfGradeSystem')?.value||5)}
 function add(r){records.push({id:++serial,year:r.year??1,semester:r.semester??1,subject:r.subject??'',group:r.group||classify(r.subject),credit:r.credit??0,grade:r.grade??'',include:r.include!==false,page:r.page||null})}
@@ -134,11 +150,11 @@ async function readPdf(file){
  const pages=[];for(let i=1;i<=doc.numPages;i++){if(sequence!==readSequence)return;$('pdfState').textContent=`PDF ${i}/${doc.numPages}쪽 분석 중…`;const pg=await doc.getPage(i);const content=await pg.getTextContent();pages.push({page:i,rows:rowsByGeometry(content,i)})}
  if(sequence!==readSequence)return;
  const parsed=parsePdfGeometry(pages);heldRows=parsed.hold;
- if(parsed.found.length){records=[];parsed.found.forEach(add);sourceName=file.name;markUnreviewed();draw();$('pdfState').textContent=`${file.name}에서 ${parsed.found.length}개 과목 후보를 추출했습니다. 보류 ${parsed.hold.length}건. 원본 전체와 대조하세요.`}
+ if(parsed.found.length){userOverrodeAutoGrade=false;lastAutoApplied=null;records=[];parsed.found.forEach(add);sourceName=file.name;markUnreviewed();draw();$('pdfState').textContent=`${file.name}에서 ${parsed.found.length}개 과목 후보를 추출했습니다. 보류 ${parsed.hold.length}건. 원본 전체와 대조하세요.`}
  else{$('pdfState').textContent=`새 PDF에서 확정 가능한 과목이 없습니다. 이전 자료(${previous})를 유지합니다. 보류 ${parsed.hold.length}건 확인 후 직접 입력하세요.`;draw()}
  }finally{try{await doc.destroy()}catch(e){}}
  }catch(e){if(sequence===readSequence){$('pdfState').textContent=`새 파일 분석 실패 — 이전 자료(${previous})를 표시 중입니다. `+(e.name==='PasswordException'?'암호를 해제한 PDF를 선택하세요.':e.message);draw()}}
- finally{if(sequence===readSequence){loading=false;renderHeld();updateReview()}}
+ finally{if(sequence===readSequence){loading=false;renderHeld();updateReview();syncWholeAverage()}}
 }
 function renderHeld(){const panel=$('pdfHoldRows');if(!panel)return;$('pdfHoldCount').textContent=heldRows.length;panel.innerHTML=heldRows.length?heldRows.slice(0,400).map(x=>`<div>PDF ${esc(x.page)}쪽 · ${esc(x.text)}</div>`).join(''):'자동 인식 보류 행은 없습니다. 이 목록에 없더라도 원본에서 빠진 과목이 있을 수 있습니다.'}
 function init(){if(!$('pdfDrop'))return;
@@ -151,17 +167,17 @@ function init(){if(!$('pdfDrop'))return;
  for(const ev of ['dragleave','drop'])drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('dragover')});
  drop.addEventListener('drop',e=>{const f=e.dataTransfer?.files?.[0];if(f)readPdf(f)});
  $('pdfAdd').addEventListener('click',()=>{add({year:1,semester:1,subject:'',credit:0,grade:''});markUnreviewed();draw()});
- $('pdfClear').addEventListener('click',()=>{readSequence++;loading=false;sourceName='수동 입력';heldRows=[];renderHeld();records=[];markUnreviewed();draw();$('pdfState').textContent='분석 내용을 지웠습니다. 새 PDF를 올리거나 과목을 직접 추가할 수 있습니다.'});
+ $('pdfClear').addEventListener('click',()=>{readSequence++;loading=false;sourceName='수동 입력';heldRows=[];renderHeld();records=[];automaticGradeValue=null;lastAutoApplied=null;userOverrodeAutoGrade=false;const source=$('autoGradeSource');if(source){source.hidden=true;source.textContent='';}markUnreviewed();draw();$('pdfState').textContent='분석 내용을 지웠습니다. 새 PDF를 올리거나 과목을 직접 추가할 수 있습니다.'});
  $('pdfPrint').addEventListener('click',()=>{if(!reviewed)return;document.body.classList.add('print-pdf-grade');try{window.print()}finally{setTimeout(()=>document.body.classList.remove('print-pdf-grade'),1000)}});
  window.addEventListener('afterprint',()=>document.body.classList.remove('print-pdf-grade'));
- $('pdfGradeSystem')?.addEventListener('change',()=>{markUnreviewed();draw()});$('pdfApply').addEventListener('click',()=>{if(!reviewed||loading)return;const group=$('pdfApplyGroup').value,rule=categoryRules.find(x=>x[0]===group);if(!rule)return;const a=gradeAvg(records.filter(r=>validRow(r)&&rule[1](r.group||classify(r.subject))));if(!a)return;const system=$('pdfGradeSystem').value;$('system').value=system;$('grade').max=system;$('grade').value=a.value.toFixed(2);document.querySelector('[data-tab=explore]').click();$('grade').dispatchEvent(new Event('input',{bubbles:true}));});
- $('pdfReviewed')?.addEventListener('change',e=>{reviewed=!!e.target.checked&&records.some(validRow);updateReview()});
+ $('pdfGradeSystem')?.addEventListener('change',()=>{markUnreviewed();draw()});$('pdfApply').addEventListener('click',()=>{if(!reviewed||loading)return;const group=$('pdfApplyGroup').value,rule=categoryRules.find(x=>x[0]===group);if(!rule)return;const a=gradeAvg(records.filter(r=>validRow(r)&&rule[1](r.group||classify(r.subject))));if(!a)return;const system=$('pdfGradeSystem').value;$('system').value=system;$('grade').max=system;$('grade').value=a.value.toFixed(2);userOverrodeAutoGrade=false;lastAutoApplied=a.value.toFixed(2);document.querySelector('[data-tab=explore]').click();$('grade').dispatchEvent(new Event('input',{bubbles:true}));});
+ $('pdfReviewed')?.addEventListener('change',e=>{reviewed=!!e.target.checked&&records.some(validRow);updateReview();syncWholeAverage()});
  $('pdfRecordBody').addEventListener('input',e=>{const inp=e.target.closest('input[data-field],select[data-field]');if(!inp)return;const tr=inp.closest('tr'),r=records.find(x=>x.id===+tr.dataset.rid);if(!r)return;const k=inp.dataset.field;r[k]=k==='subject'||k==='group'?inp.value:k==='include'?inp.checked:(inp.value===''?'':Number(inp.value));if(k==='subject')r.group=classify(inp.value);markUnreviewed();const rowClass=validRow(r)?'':'invalid';tr.className=rowClass;drawSummaryOnly()});
  $('pdfRecordBody').addEventListener('change',e=>{if(e.target.matches('[data-field=include],[data-field=group]'))e.target.dispatchEvent(new Event('input',{bubbles:true}))});$('pdfRecordBody').addEventListener('click',e=>{const btn=e.target.closest('[data-remove]');if(!btn)return;records=records.filter(x=>x.id!==+btn.dataset.remove);markUnreviewed();draw()});
  renderHeld();draw();
 }
 function drawSummaryOnly(){
- const body=$('pdfSummaryBody');body.innerHTML=categoryRules.map(([name,pred])=>`<tr><th scope="row">${name}</th>${[null,...semesters].map(sem=>{let subset=records.filter(r=>validRow(r)&&pred(r.group||classify(r.subject))&&(!sem||(r.year===sem[0]&&r.semester===sem[1]))),a=gradeAvg(subset);return `<td title="${a?`${a.count}과목 · ${a.units}학점`:'자료 없음'}">${a?`<strong>${a.value.toFixed(2)}</strong><small class="pdf-unit">${a.count}과목 · ${a.units}학점</small>`:'—'}</td>`}).join('')}</tr>`).join('');const n=records.filter(validRow).length;$('pdfCount').textContent=`계산에 포함한 과목 ${n}개 / 총 ${records.length}개 · 확인이 필요한 행 ${records.length-n}개. (전체 평균은 3학년 1학기까지의 합산입니다.)`;updateReview();
+ const body=$('pdfSummaryBody');body.innerHTML=categoryRules.map(([name,pred])=>`<tr><th scope="row">${name}</th>${[null,...semesters].map(sem=>{let subset=records.filter(r=>validRow(r)&&pred(r.group||classify(r.subject))&&(!sem||(r.year===sem[0]&&r.semester===sem[1]))),a=gradeAvg(subset);return `<td title="${a?`${a.count}과목 · ${a.units}학점`:'자료 없음'}">${a?`<strong>${a.value.toFixed(2)}</strong><small class="pdf-unit">${a.count}과목 · ${a.units}학점</small>`:'—'}</td>`}).join('')}</tr>`).join('');const n=records.filter(validRow).length;$('pdfCount').textContent=`계산에 포함한 과목 ${n}개 / 총 ${records.length}개 · 확인이 필요한 행 ${records.length-n}개. (전체 평균은 3학년 1학기까지의 합산입니다.)`;updateReview();syncWholeAverage();
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
