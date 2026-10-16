@@ -4,8 +4,9 @@
 const $=id=>document.getElementById(id);
 let records=[],serial=0,pdfLoading=null,reviewed=false,readSequence=0, sourceName='수동 입력', heldRows=[], loading=false;
 let automaticGradeValue=null, userOverrodeAutoGrade=false, lastAutoApplied=null;
+function manualGradeMessage(){const sys=$('system').value,raw=$('grade').value.trim(),n=Number(raw);if(sys==='none')return '성적 비교 없이 대학·학과를 탐색 중입니다.';const max=sys==='9'?9:5;if(!raw||!Number.isFinite(n)||n<1||n>max)return '유효한 성적이 없어 성적 비교를 하지 않습니다.';return '직접 입력한 '+max+'등급제 평균 '+n.toFixed(2)+'등급을 사용 중입니다.'+(lastAutoApplied!==null?' 이전 학생부 적용값 '+lastAutoApplied+'등급과 다를 수 있습니다.':'');}
 function signalManualOverride(){userOverrodeAutoGrade=true;const hint=$('pdfAutoGradeHint');if(hint&&lastAutoApplied!==null)hint.textContent='대학 찾기에서 직접 수정한 등급을 유지합니다. PDF 평균을 다시 사용하려면 아래 「검토한 평균으로 대학 찾기」를 누르세요.';}
-const gradeField=$('grade');if(gradeField){gradeField.addEventListener('input',event=>{if(event.isTrusted)signalManualOverride()});}const systemField=$('system');if(systemField){systemField.addEventListener('change',event=>{if(event.isTrusted)signalManualOverride()});}
+const gradeField=$('grade');if(gradeField){gradeField.addEventListener('input',event=>{if(event.isTrusted){signalManualOverride();const s=$('autoGradeSource');if(s){s.hidden=false;s.textContent=manualGradeMessage();}}});}const systemField=$('system');if(systemField){systemField.addEventListener('change',event=>{if(event.isTrusted){signalManualOverride();const s=$('autoGradeSource');if(s){s.hidden=false;s.textContent=manualGradeMessage();}}});}
 function syncWholeAverage(){
  const hint=$('pdfAutoGradeHint');
  const a=gradeAvg(records.filter(validRow));const system=$('pdfGradeSystem')?.value;
