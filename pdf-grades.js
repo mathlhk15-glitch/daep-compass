@@ -9,7 +9,7 @@ const gradeField=$('grade');if(gradeField){gradeField.addEventListener('input',e
 function syncWholeAverage(){
  const hint=$('pdfAutoGradeHint');
  const a=gradeAvg(records.filter(validRow));const system=$('pdfGradeSystem')?.value;
- if(!a||loading||!records.length){if(hint)hint.textContent='PDF에서 전과목 전체 평균이 계산되면 대학 찾기에 자동 입력됩니다. 원본 대조 전에는 잠정값입니다.';return;}
+ if(!a||loading||!records.length||!reviewed){if(hint)hint.textContent='PDF 추출 성적은 원본 대조 완료 후에만 대학 찾기에 자동 적용됩니다.';return;}
  if(system!=='5'){if(hint)hint.textContent='현재 학생부는 9등급제입니다. 5등급제 입력칸에 다른 척도의 값을 자동 입력하지 않습니다. 검토 후 적용 버튼을 이용하세요.';return;}
  const value=a.value.toFixed(2);automaticGradeValue=value;
  if(userOverrodeAutoGrade){if(hint)hint.textContent='전과목 전체 평균 '+value+'등급 · 대학 찾기의 직접 수정한 입력값을 유지하고 있습니다.';return;}
@@ -58,22 +58,23 @@ function draw(){
  $('pdfAnalysis').hidden=false;updateReview();syncWholeAverage();
 }
 function validRow(r){return r.include!==false&&allowedSemester(r.year,r.semester)&&String(r.subject).trim()!==''&&Number.isFinite(+r.credit)&&+r.credit>0&&+r.credit<=30&&Number.isInteger(+r.grade)&&+r.grade>=1&&+r.grade<=Number($('pdfGradeSystem')?.value||5)}
-function add(r){records.push({id:++serial,year:r.year??1,semester:r.semester??1,subject:r.subject??'',group:r.group||classify(r.subject),credit:r.credit??0,grade:r.grade??'',include:r.include!==false,page:r.page||null})}
+function add(r){records.push({id:++serial,year:r.year??1,semester:r.semester??1,subject:r.subject??'',group:r.group||classify(r.subject),credit:r.credit??0,grade:r.grade??'',include:r.include!==false,page:r.page||null,groupManual:!!r.groupManual})}
 // PDF.js 텍스트 레이어의 x/y 위치를 사용한다. 표 제목의 열 순서와 본문을 확인하고, 확실하지 않은 행은 보류한다.
 function norm(x){return String(x||'').replace(/\s+/g,'').toLowerCase()}
 function groupText(items){const sorted=[...items].sort((a,b)=>a.x-b.x);let text='',previous=null;for(const c of sorted){if(previous&&c.x-(previous.x+previous.width)>4)text+=' ';text+=c.text;previous=c}return text.trim()}
 function rowsByGeometry(content,page){const items=content.items.filter(x=>x.str?.trim()).map(x=>({text:x.str,x:x.transform[4],y:x.transform[5],width:x.width||x.str.length*5})).sort((a,b)=>b.y-a.y||a.x-b.x);const rows=[];for(const item of items){let row=rows.find(r=>Math.abs(r.y-item.y)<=2);if(!row){row={y:item.y,items:[],page};rows.push(row)}row.items.push(item)}return rows.sort((a,b)=>b.y-a.y)}
 function findColumns(rows,index){
  const row=rows[index];const text=norm(groupText(row.items));
- if(!text.includes('학기')||!text.includes('교과')||!text.includes('과목')||!text.includes('학점'))return null;
+ if(!text.includes('학기')||!text.includes('교과')||!text.includes('과목')||!(text.includes('학점')||text.includes('단위수')))return null;
  const near=rows.filter(r=>Math.abs(r.y-row.y)<=11);
- const specs=[['semester',/^학기$/],['group',/^교과$/],['subject',/^과목$/],['credit',/^학점$/],['average',/^(원점수|과목평균)/],['achievement',/^성취도$/],['distribution',/^성취도별/],['grade',/^(석차|석차등급)$/],['enrollment',/^수강/],['note',/^비고$/]];
+ const specs=[['semester',/^학기$/],['group',/^교과$/],['subject',/^과목$/],['credit',/^(학점|단위수)$/],['average',/^(원점수|과목평균)/],['achievement',/^성취도$/],['distribution',/^성취도별/],['grade',/^(석차|석차등급)$/],['enrollment',/^수강/],['note',/^비고$/]];
  const columns={};for(const r of near)for(const item of r.items){const t=norm(item.text);for(const [key,pat] of specs)if(columns[key]===undefined&&pat.test(t))columns[key]=item.x}
  return ['semester','group','subject','credit','average','grade'].every(k=>Number.isFinite(columns[k]))?columns:null;
 }
 function parsePdfGeometry(pages){
  const found=[],hold=[];let year=null,semester=null,columns=null,tableType='';
  for(const {page,rows} of pages){
+  const pageStartingYear=year;const pageStartingSemester=semester;const pageStartingColumns=columns;const pageStartingTableType=tableType;
   const markers=[];
   for(let i=0;i<rows.length;i++){
    const row=rows[i],line=groupText(row.items),dense=norm(line);
@@ -89,7 +90,8 @@ function parsePdfGeometry(pages){
   }
   // 이전 페이지에서 교과 성적표가 이어진 경우 머리글이 없어도 유지한다.
   // 페이지 전체를 다시 읽어 학년/표종류를 순서대로 결정한다.
-  let localYear=null,activeColumns=null,active=false;
+  year=pageStartingYear;semester=pageStartingSemester;
+  let activeColumns=pageStartingTableType==='graded'?pageStartingColumns:null,active=!!activeColumns;
   for(let i=0;i<rows.length;i++){
    const row=rows[i],dense=norm(groupText(row.items));
    const m=dense.match(/\[([123])학년\]/);if(m){year=Number(m[1]);semester=null;active=false;activeColumns=null;}
@@ -167,12 +169,12 @@ function init(){if(!$('pdfDrop'))return;
  for(const ev of ['dragleave','drop'])drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('dragover')});
  drop.addEventListener('drop',e=>{const f=e.dataTransfer?.files?.[0];if(f)readPdf(f)});
  $('pdfAdd').addEventListener('click',()=>{add({year:1,semester:1,subject:'',credit:0,grade:''});markUnreviewed();draw()});
- $('pdfClear').addEventListener('click',()=>{readSequence++;loading=false;sourceName='수동 입력';heldRows=[];renderHeld();records=[];automaticGradeValue=null;lastAutoApplied=null;userOverrodeAutoGrade=false;const source=$('autoGradeSource');if(source){source.hidden=true;source.textContent='';}markUnreviewed();draw();$('pdfState').textContent='분석 내용을 지웠습니다. 새 PDF를 올리거나 과목을 직접 추가할 수 있습니다.'});
+ $('pdfClear').addEventListener('click',()=>{readSequence++;loading=false;sourceName='수동 입력';heldRows=[];renderHeld();records=[];automaticGradeValue=null;lastAutoApplied=null;userOverrodeAutoGrade=false;const source=$('autoGradeSource');if(source){source.hidden=false;source.textContent='이전 학생부에서 입력한 검색 성적이 남아 있을 수 있습니다. 새 학생 상담 시 대학 찾기 입력값도 확인·수정하세요.';}markUnreviewed();draw();$('pdfState').textContent='분석 내용을 지웠습니다. 새 PDF를 올리거나 과목을 직접 추가할 수 있습니다.'});
  $('pdfPrint').addEventListener('click',()=>{if(!reviewed)return;document.body.classList.add('print-pdf-grade');try{window.print()}finally{setTimeout(()=>document.body.classList.remove('print-pdf-grade'),1000)}});
  window.addEventListener('afterprint',()=>document.body.classList.remove('print-pdf-grade'));
- $('pdfGradeSystem')?.addEventListener('change',()=>{markUnreviewed();draw()});$('pdfApply').addEventListener('click',()=>{if(!reviewed||loading)return;const group=$('pdfApplyGroup').value,rule=categoryRules.find(x=>x[0]===group);if(!rule)return;const a=gradeAvg(records.filter(r=>validRow(r)&&rule[1](r.group||classify(r.subject))));if(!a)return;const system=$('pdfGradeSystem').value;$('system').value=system;$('grade').max=system;$('grade').value=a.value.toFixed(2);userOverrodeAutoGrade=false;lastAutoApplied=a.value.toFixed(2);document.querySelector('[data-tab=explore]').click();$('grade').dispatchEvent(new Event('input',{bubbles:true}));});
+ $('pdfGradeSystem')?.addEventListener('change',()=>{markUnreviewed();draw()});$('pdfApply').addEventListener('click',()=>{if(!reviewed||loading)return;const group=$('pdfApplyGroup').value,rule=categoryRules.find(x=>x[0]===group);if(!rule)return;const a=gradeAvg(records.filter(r=>validRow(r)&&rule[1](r.group||classify(r.subject))));if(!a)return;const system=$('pdfGradeSystem').value;$('system').value=system;$('system').dispatchEvent(new Event('change',{bubbles:true}));$('grade').max=system;$('grade').value=a.value.toFixed(2);userOverrodeAutoGrade=true;lastAutoApplied=a.value.toFixed(2);const origin=$('autoGradeSource');if(origin){origin.hidden=false;origin.textContent='원본 대조 완료 · '+group+' '+a.value.toFixed(2)+'등급 적용 ('+system+'등급제). 직접 수정값은 자동으로 변경하지 않습니다.';}document.querySelector('[data-tab=explore]').click();$('grade').dispatchEvent(new Event('input',{bubbles:true}));});
  $('pdfReviewed')?.addEventListener('change',e=>{reviewed=!!e.target.checked&&records.some(validRow);updateReview();syncWholeAverage()});
- $('pdfRecordBody').addEventListener('input',e=>{const inp=e.target.closest('input[data-field],select[data-field]');if(!inp)return;const tr=inp.closest('tr'),r=records.find(x=>x.id===+tr.dataset.rid);if(!r)return;const k=inp.dataset.field;r[k]=k==='subject'||k==='group'?inp.value:k==='include'?inp.checked:(inp.value===''?'':Number(inp.value));if(k==='subject')r.group=classify(inp.value);markUnreviewed();const rowClass=validRow(r)?'':'invalid';tr.className=rowClass;drawSummaryOnly()});
+ $('pdfRecordBody').addEventListener('input',e=>{const inp=e.target.closest('input[data-field],select[data-field]');if(!inp)return;const tr=inp.closest('tr'),r=records.find(x=>x.id===+tr.dataset.rid);if(!r)return;const k=inp.dataset.field;r[k]=k==='subject'||k==='group'?inp.value:k==='include'?inp.checked:(inp.value===''?'':Number(inp.value));if(k==='group')r.groupManual=true;if(k==='subject'&&!r.groupManual){r.group=classify(inp.value);const sel=tr.querySelector('select[data-field=group]');if(sel)sel.value=r.group;}markUnreviewed();const rowClass=validRow(r)?'':'invalid';tr.className=rowClass;drawSummaryOnly()});
  $('pdfRecordBody').addEventListener('change',e=>{if(e.target.matches('[data-field=include],[data-field=group]'))e.target.dispatchEvent(new Event('input',{bubbles:true}))});$('pdfRecordBody').addEventListener('click',e=>{const btn=e.target.closest('[data-remove]');if(!btn)return;records=records.filter(x=>x.id!==+btn.dataset.remove);markUnreviewed();draw()});
  renderHeld();draw();
 }
