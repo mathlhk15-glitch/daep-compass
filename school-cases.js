@@ -130,6 +130,38 @@ function queryMatch(r,s){
  if(!s.query)return true;
  return s.query.split(' ').every(t=>matchesUniversity(r['대학'],t)||String(r['학과']||'').toLowerCase().includes(t.toLowerCase())||String(r['전형']||'').includes(t));
 }
+/* 학과·분야 검색 보충: 학교 집계 대부분은 학과 구분 없는 '대학 단위'이므로,
+   전국 입결(이미 불러온 연도)에서 그 학과를 모집한 대학의 대학 단위 집계를 '학과 미구분'으로 함께 보여 준다. */
+const majorUniCache=new Map();
+function majorWords(s){
+ const words=[];
+ if(s.catWords.length)words.push({any:s.catWords.map(w=>w.toLowerCase())});
+ for(const t of (s.query?s.query.split(' '):[])){
+  const isUni=data.some(r=>matchesUniversity(r['대학'],t));
+  if(!isUni)words.push({any:[t.toLowerCase()]});
+ }
+ return words;
+}
+function unisOfferingMajor(words){
+ const key=JSON.stringify(words)+'|'+(typeof recordIndex==='object'?recordIndex.size:0);
+ if(majorUniCache.has(key))return majorUniCache.get(key);
+ const set=new Set();
+ if(typeof recordIndex==='object'){
+  for(const b of recordIndex.values()){
+   const m=String(b.r[2]||'').toLowerCase();
+   if(words.every(w=>w.any.some(x=>m.includes(x)))){const u=universityParts(b.r[1]);set.add(u.name+'|'+(BRANCH.has(u.campus)?u.campus:''));}
+  }
+ }
+ majorUniCache.set(key,set);return set;
+}
+function fallbackMatch(r,s,words,unis){
+ if(r['학과']||!words.length)return false;
+ const u=r._uni;if(!unis.has(u.name+'|'+(BRANCH.has(u.campus)?u.campus:'')))return false;
+ // 대학명 검색어가 함께 있으면 그 대학이어야 한다
+ const uniTokens=(s.query?s.query.split(' '):[]).filter(t=>data.some(x=>matchesUniversity(x['대학'],t)));
+ return uniTokens.every(t=>matchesUniversity(r['대학'],t));
+}
+function majorLabel(s){const w=[...(s.catWords.length?[s.catWords[0]+' 계열']:[]),...((s.query?s.query.split(' '):[]).filter(t=>!data.some(r=>matchesUniversity(r['대학'],t))))];return w.join('·')||'검색 학과';}
 const groupKey=r=>[r._school,r._uni.name,r._uni.campus,majorKey(r['학과']),r._track].join('|');
 /* 집계 단위 선택 규칙
    - 성적이 있으면: 등급구간 집계 중 겹치는 것을 우선. 같은 대학·학과·전형에 등급구간 집계가 없을 때만 '전체 성적대' 집계를 보충(그 범위가 겹칠 때).
@@ -156,7 +188,7 @@ function gradeNote(r,st){
  if(st==='partial')return '집계 구간이 검색 범위와 일부만 겹칩니다. 범위 밖 성적의 선배도 포함됩니다.';
  return '';
 }
-function makeCard(r,s){const st=gradeState(r,s),note=gradeNote(r,st);return `<article class="school-result${r._school===COMBINED?' combined':''}"><div class="sr-badges"><span>${esc(schoolLabel(r._school))}</span><span>${esc(yearText(r))}</span><span>${esc(r._track==='기타'?'실기·기타':r._track)}</span>${levelBadge(r)}${st==='partial'?'<span class="sr-partial">등급구간 일부 겹침</span>':''}</div><h3>${esc(r['대학']||'대학 통합')} · ${esc(r['학과']||'학과 통합')}</h3><p class="sr-meta">집계 등급구간(9등급 전교과): <b>${esc(rangeText(r))}</b>${note?'<br>'+esc(note):''}</p><div class="sr-stats"><div><small>지원 규모</small><strong>${esc(r['지원구간']||'미제공')}</strong></div><div><small>원서 결과</small><strong>${esc(r['합격정보']||'미제공')}</strong></div></div></article>`;}
+function makeCard(r,s){const st=gradeState(r,s),note=gradeNote(r,st);return `<article class="school-result${r._school===COMBINED?' combined':''}${r._fallback?' fallback':''}">${r._fallback?`<p class="fb-note">「${esc(majorLabel(s))}」 학과 단위 집계가 없어, 전국 입결에서 이 학과를 모집한 대학의 <b>같은 전형 전체 집계(학과 미구분)</b>를 보여 줍니다.</p>`:''}<div class="sr-badges"><span>${esc(schoolLabel(r._school))}</span><span>${esc(yearText(r))}</span><span>${esc(r._track==='기타'?'실기·기타':r._track)}</span>${levelBadge(r)}${st==='partial'?'<span class="sr-partial">등급구간 일부 겹침</span>':''}</div><h3>${esc(r['대학']||'대학 통합')} · ${esc(r['학과']||'학과 통합')}</h3><p class="sr-meta">집계 등급구간(9등급 전교과): <b>${esc(rangeText(r))}</b>${note?'<br>'+esc(note):''}</p><div class="sr-stats"><div><small>지원 규모</small><strong>${esc(r['지원구간']||'미제공')}</strong></div><div><small>원서 결과</small><strong>${esc(r['합격정보']||'미제공')}</strong></div></div></article>`;}
 
 /* ---------- 학교 사례 블록 ---------- */
 function status(html){const el=$('caseStatus');if(el)el.innerHTML=html;}
@@ -182,11 +214,15 @@ function render(){
  const s=shared();
  if(!s.rawSchools){status('<b>학교를 하나 이상 선택해 주세요.</b>');if(count)count.textContent='0건';return;}
  if(!s.types.size){status('<b>위의 관심 전형을 하나 이상 선택해 주세요.</b>');if(count)count.textContent='0건';return;}
- const selected=sortRows(pick(data.filter(r=>common(r,s)&&queryMatch(r,s)),s),s);
+ const direct=data.filter(r=>common(r,s)&&queryMatch(r,s));
+ const words=majorWords(s);let fallback=[];
+ if(words.length){const unis=unisOfferingMajor(words);fallback=data.filter(r=>common(r,s)&&!direct.includes(r)&&fallbackMatch(r,s,words,unis)).map(r=>Object.assign(Object.create(Object.getPrototypeOf(r)),r,{_fallback:true}));}
+ const selected=[...sortRows(pick(direct,s),s),...sortRows(pick(fallback,s),s)];
+ const fbCount=selected.filter(r=>r._fallback).length;
  const limit=source==='both'?Math.min(displayLimit,12):displayLimit;
  const displayed=selected.slice(0,limit);
  if(count)count.textContent=`${selected.length.toLocaleString()}건 중 ${displayed.length.toLocaleString()}건 표시`;
- status(`<div class="cond-row">${conditionChips(s)}</div><span class="micro">자료: ${esc(sourceName)} · 서로 다른 학생 10명 이상 집계만 표시 · 선배 개인 사례가 아니며 합격 가능성 판단이 아닙니다.</span>`);
+ status(`<div class="cond-row">${conditionChips(s)}</div>${fbCount?`<p class="fb-summary">학과 단위 집계 ${selected.length-fbCount}건 + <b>학과 미구분 대학 집계 ${fbCount}건</b>(그 학과를 모집한 대학의 같은 전형 전체 선배 결과)</p>`:''}<span class="micro">자료: ${esc(sourceName)} · 서로 다른 학생 10명 이상 집계만 표시 · 선배 개인 사례가 아니며 합격 가능성 판단이 아닙니다.</span>`);
  out.innerHTML=displayed.map(r=>makeCard(r,s)).join('')||'<div class="school-empty">현재 조건에 맞는 학교 집계가 없습니다. 검색 범위(±)를 넓히거나, 학과 대신 대학명으로 검색하거나, 두 학교를 모두 선택해 보세요. 집계가 없다는 것은 지원 사례가 없었다는 뜻이 아니라 공개 기준(학생 10명)에 못 미쳤을 수 있다는 뜻입니다.</div>';
  if(more&&selected.length>displayed.length){more.hidden=false;more.textContent=source==='both'?`우리 학교 선배 집계 ${selected.length-displayed.length}건 더 보기 (선배 사례 화면으로 전환)`:`나머지 ${selected.length-displayed.length}건 더 보기`;}
 }
