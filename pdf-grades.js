@@ -47,24 +47,68 @@ function add(r){records.push({id:++serial,year:r.year??1,semester:r.semester??1,
 function norm(x){return String(x||'').replace(/\s+/g,'').toLowerCase()}
 function groupText(items){const sorted=[...items].sort((a,b)=>a.x-b.x);let text='',previous=null;for(const c of sorted){if(previous&&c.x-(previous.x+previous.width)>4)text+=' ';text+=c.text;previous=c}return text.trim()}
 function rowsByGeometry(content,page){const items=content.items.filter(x=>x.str?.trim()).map(x=>({text:x.str,x:x.transform[4],y:x.transform[5],width:x.width||x.str.length*5})).sort((a,b)=>b.y-a.y||a.x-b.x);const rows=[];for(const item of items){let row=rows.find(r=>Math.abs(r.y-item.y)<=2);if(!row){row={y:item.y,items:[],page};rows.push(row)}row.items.push(item)}return rows.sort((a,b)=>b.y-a.y)}
-function findColumns(row){const items=[...row.items].sort((a,b)=>a.x-b.x);const names=[['semester',/(^학기$)/],['group',/(^교과$|^교과군$)/],['subject',/(^과목$|^과목명$)/],['credit',/(학점|단위수|이수단위)/],['grade',/(석차등급|^등급$)/],['note',/(^비고$)/]];const cols={};for(const item of items){const t=norm(item.text);for(const [key,regex] of names)if(!(key in cols)&&regex.test(t))cols[key]=item.x}return cols.subject!==undefined&&cols.credit!==undefined&&cols.grade!==undefined?cols:null}
-function parsePdfGeometry(pages){let found=[],hold=[],year=null,sem=null,cols=null;
-for(const {page,rows} of pages){for(const row of rows){const text=groupText(row.items),dense=norm(text);if(!dense)continue;
-const ym=text.match(/\[?\s*([123])\s*학년\s*\]?/);if(ym){const ny=Number(ym[1]);if(year!==ny)sem=null;year=ny}
-const head=findColumns(row);if(head){cols=head;continue}
-if(/교과학습발달상황|세부능력및특기사항|창의적체험활동|독서활동상황/.test(dense)){if(!/교과학습발달상황/.test(dense))cols=null;continue}
-if(!cols||year===null)continue;
-const keys=Object.keys(cols).sort((a,b)=>cols[a]-cols[b]);const buckets={};for(const key of keys)buckets[key]=[];
-for(const item of row.items){let key=keys[0];for(let i=0;i<keys.length;i++){const right= i+1<keys.length?(cols[keys[i]]+cols[keys[i+1]])/2:Infinity;if(item.x<right){key=keys[i];break}}buckets[key].push(item)}
-const get=k=>groupText(buckets[k]||[]);const semText=get('semester');const current=semText.match(/^([12])$/)||text.match(/^(?:[123]\s*학년\s*)?([12])\s*학기/);if(current)sem=Number(current[1]);
-if(!allowedSemester(year,sem))continue;
-let subject=get('subject').replace(/^(?:\[?[123]학년\]?\s*)?(?:[12]학기\s*)?/,'').trim(),group=get('group'),creditText=get('credit'),gradeText=get('grade');
-if(!subject||/과목명|합계|총계|평균/.test(subject))continue;
-let credit=Number(creditText.replace(/\s/g,'')),grade=Number(gradeText.replace(/\s/g,''));
-if(/^[가-힣A-Za-z]/.test(subject)&&Number.isFinite(credit)&&credit>0&&credit<=30&&Number.isInteger(grade)&&grade>=1&&grade<=Number($('pdfGradeSystem')?.value||5))found.push({year,semester:sem,subject,group:classify(subject,group),credit,grade,page});
-else if(/[가-힣A-Za-z]/.test(subject))hold.push({page,text:`${year}학년 ${sem}학기 | ${group} | ${subject} | 학점 ${creditText||'미인식'} | 등급 ${gradeText||'미인식'}`});
-}}
-return {found,hold};}
+function findColumns(rows,index){
+ const row=rows[index];const text=norm(groupText(row.items));
+ if(!text.includes('학기')||!text.includes('교과')||!text.includes('과목')||!text.includes('학점'))return null;
+ const near=rows.filter(r=>Math.abs(r.y-row.y)<=11);
+ const specs=[['semester',/^학기$/],['group',/^교과$/],['subject',/^과목$/],['credit',/^학점$/],['average',/^(원점수|과목평균)/],['achievement',/^성취도$/],['distribution',/^성취도별/],['grade',/^(석차|석차등급)$/],['enrollment',/^수강/],['note',/^비고$/]];
+ const columns={};for(const r of near)for(const item of r.items){const t=norm(item.text);for(const [key,pat] of specs)if(columns[key]===undefined&&pat.test(t))columns[key]=item.x}
+ return ['semester','group','subject','credit','average','grade'].every(k=>Number.isFinite(columns[k]))?columns:null;
+}
+function parsePdfGeometry(pages){
+ const found=[],hold=[];let year=null,semester=null,columns=null,tableType='';
+ for(const {page,rows} of pages){
+  const markers=[];
+  for(let i=0;i<rows.length;i++){
+   const row=rows[i],line=groupText(row.items),dense=norm(line);
+   const m=dense.match(/\[([123])학년\]/);if(m){year=Number(m[1]);semester=null;columns=null;tableType='';}
+   if(/<체육|<교양|세부능력및특기사항|독서활동상황|행동특성및종합의견/.test(dense)){columns=null;tableType='';}
+   const head=findColumns(rows,i);
+   if(head){columns=head;tableType='graded';}
+   // 학기 숫자는 병합된 셀 중앙에 나타나므로 과목 행보다 위/아래에 있을 수 있다.
+   if(columns&&tableType==='graded')for(const item of row.items){
+    if(/^\s*[12]\s*$/.test(item.text)&&item.x>=columns.semester-12&&item.x<columns.group-18)
+      markers.push({y:row.y,semester:Number(item.text.trim())});
+   }
+  }
+  // 이전 페이지에서 교과 성적표가 이어진 경우 머리글이 없어도 유지한다.
+  // 페이지 전체를 다시 읽어 학년/표종류를 순서대로 결정한다.
+  let localYear=null,activeColumns=null,active=false;
+  for(let i=0;i<rows.length;i++){
+   const row=rows[i],dense=norm(groupText(row.items));
+   const m=dense.match(/\[([123])학년\]/);if(m){year=Number(m[1]);semester=null;active=false;activeColumns=null;}
+   if(/<체육|<교양|세부능력및특기사항|독서활동상황|행동특성및종합의견/.test(dense)){active=false;activeColumns=null;}
+   const head=findColumns(rows,i);if(head){activeColumns=head;active=true;continue;}
+   if(!active||!activeColumns||year===null)continue;
+   const col=activeColumns;
+   const sorted=Object.entries(col).sort((a,b)=>a[1]-b[1]);
+   const boundaries=sorted.map((e,j)=>j+1<sorted.length?(e[1]+sorted[j+1][1])/2:Infinity);
+   const buckets={};for(const [key] of sorted)buckets[key]=[];
+   for(const item of row.items){const index=boundaries.findIndex(right=>item.x<right);buckets[sorted[index<0?sorted.length-1:index][0]].push(item)}
+   const get=(k)=>groupText(buckets[k]||[]);
+   const ct=get('credit').replace(/\s/g,''),gt=get('grade').replace(/\s/g,'');
+   if(!/^\d+(?:\.\d+)?$/.test(ct)||!/^\d+$/.test(gt))continue;
+   const credit=Number(ct),grade=Number(gt);
+   // 과목 셀의 글자가 두 줄로 나뉜 경우, 같은 x열의 인접 글자를 결합한다.
+   const subjectItems=[];const groupItems=[];
+   for(const neighbor of rows){if(Math.abs(neighbor.y-row.y)>9)continue;
+    for(const item of neighbor.items){if(item.x>=boundaries[1]&&item.x<boundaries[2])subjectItems.push(item);
+     else if(item.x>=boundaries[0]&&item.x<boundaries[1])groupItems.push(item)}
+   }
+   subjectItems.sort((a,b)=>b.y-a.y||a.x-b.x);
+   const subject=subjectItems.map(o=>o.text.trim()).join('').replace(/\s+/g,' ').trim();
+   const group=groupItems.sort((a,b)=>b.y-a.y||a.x-b.x).map(o=>o.text.trim()).join('');
+   const nearest=markers.filter(x=>Math.abs(x.y-row.y)<250).sort((a,b)=>Math.abs(a.y-row.y)-Math.abs(b.y-row.y))[0];
+   if(nearest)semester=nearest.semester;
+   if(!subject||!/[가-힣A-Za-z]/.test(subject)||/합계|평균|과목명/.test(subject))continue;
+   if(allowedSemester(year,semester)&&credit>0&&credit<=30&&grade>=1&&grade<=Number($('pdfGradeSystem')?.value||5)){
+    const unique=year+'-'+semester+'-'+page+'-'+row.y.toFixed(1);
+    if(!found.some(r=>r._key===unique))found.push({year,semester,subject,group:classify(subject,group),credit,grade,page,_key:unique});
+   }else hold.push({page,text:`${year||'?'}학년 ${semester||'?'}학기 | ${group} | ${subject} | ${credit}학점 | ${grade}등급`});
+  }
+ }
+ found.forEach(r=>delete r._key);return {found,hold};
+}
 // x좌표를 사용할 수 없는 표 텍스트: 추측하여 확정하지 않고 모두 검토 대상으로 남긴다.
 function parsePdfText(lines){const hold=lines.filter(x=>/[가-힣]/.test(x)&&/\d/.test(x)).slice(0,500).map((text)=>({page:'?',text}));return {found:[],hold};}
 async function pdfJS(){
